@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import WeatherCard from './components/WeatherCard';
 import ForecastCard from './components/ForecastCard';
 import NewsCard from './components/NewsCard';
 import AlertsCard from './components/AlertsCard';
 import SearchBar from './components/SearchBar';
 import StatusBar from './components/StatusBar';
+import { getFastestSource, cachedFetch, fetchAllParallel } from './utils/asyncPatterns';
 
 // PROBLEM: This basic fetch has no retry, no caching, no error handling
 async function basicFetch(url) {
@@ -13,6 +14,14 @@ async function basicFetch(url) {
     throw new Error('Network response was not ok');
   }
   return response.json();
+}
+
+function debounce(func, delay) {
+  let timeoutId;
+  return function (...args) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => func(...args), delay);
+  };
 }
 
 function App() {
@@ -36,7 +45,6 @@ function App() {
     alerts: null
   });
 
-  // PROBLEM: No error handling, no retry, no caching
   const fetchWeatherData = async (cityName) => {
     setLoading(prev => ({ ...prev, weather: true }));
     setErrors(prev => ({ ...prev, weather: null }));
@@ -54,46 +62,52 @@ function App() {
 
   // PROBLEM: All requests are sequential, not parallel
   const fetchAllData = async (cityName) => {
-    // Fetch weather
-    await fetchWeatherData(cityName);
+    setLoading({ weather: true, forecast: true, news: true, alerts: true });
+    setErrors({ weather: null, forecast: null, news: null, alerts: null });
 
-    // Fetch forecast
-    setLoading(prev => ({ ...prev, forecast: true }));
-    try {
-      const data = await basicFetch(`http://localhost:3001/forecast?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, forecast: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, forecast: error.message }));
-    } finally {
-      setLoading(prev => ({ ...prev, forecast: false }));
-    }
+    const base = 'http://localhost:3001';
+    const query = `?city=${encodeURIComponent(cityName)}`;
 
-    // Fetch news
-    setLoading(prev => ({ ...prev, news: true }));
-    try {
-      const data = await basicFetch(`http://localhost:3001/news?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, news: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, news: error.message }));
-    } finally {
-      setLoading(prev => ({ ...prev, news: false }));
-    }
+    const results = await fetchAllParallel([
+      { name: 'weather', url: `${base}/weather${query}` },
+      { name: 'forecast', url: `${base}/forecast${query}` },
+      { name: 'news', url: `${base}/news${query}` },
+      { name: 'alerts', url: `${base}/alerts${query}` }
+    ]);
 
-    // Fetch alerts
-    setLoading(prev => ({ ...prev, alerts: true }));
-    try {
-      const data = await basicFetch(`http://localhost:3001/alerts?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, alerts: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, alerts: error.message }));
-    } finally {
-      setLoading(prev => ({ ...prev, alerts: false }));
-    }
+    const newData = { ...dashboardData };
+    const newErrors = {};
+
+    ['weather', 'forecast', 'news', 'alerts'].forEach(key => {
+      if (results[key].error) {
+        newErrors[key] = results[key].error;
+      } else {
+        newData[key] = results[key];
+      }
+    });
+
+    setDashboardData(newData);
+    setErrors(newErrors);
+    setLoading({ weather: false, forecast: false, news: false, alerts: false });
   };
 
+  const debouncedFetch = useRef(debounce(fetchAllData, 300)).current;
+
   useEffect(() => {
-    fetchAllData(city);
-  }, [city]);
+    debouncedFetch(city);
+  }, [city, debouncedFetch]);
+
+  useEffect(() => {
+    const base = 'http://localhost:3001';
+    const query = `?city=${encodeURIComponent('San Francisco')}`;
+    getFastestSource([
+      `${base}/weather-source1${query}`,
+      `${base}/weather-source2${query}`,
+      `${base}/weather-source3${query}`
+    ])
+      .then(result => console.log('Fastest source:', result.source, result))
+      .catch(error => console.error('❌ All sources failed:', error));
+  }, []);
 
   const handleRefresh = () => {
     fetchAllData(city);
